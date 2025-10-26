@@ -19,27 +19,50 @@ func getSelfPath() (string, error) {
 	return filepath.Join(dir, "bin"), nil
 }
 
-func AddToPath(dir string) error {
+func AddToPath(dir string) (string, error) {
 	pmPath, err := getSelfPath()
 	if err != nil {
-
+		return "", err
 	}
 	fullPath := filepath.Join(pmPath, dir)
+
 	switch runtime.GOOS {
 	case "windows":
-		// Update user PATH (persistent, no admin)
-		cmd := exec.Command("powershell",
-			fmt.Sprintf(`[Environment]::SetEnvironmentVariable('Path', $env:Path + ';%s', 'User')`, fullPath))
-		return cmd.Run()
+		// Get user-only PATH (not merged with system PATH)
+		getCmd := exec.Command("powershell", `[Environment]::GetEnvironmentVariable('Path', 'User')`)
+		out, err := getCmd.Output()
+		if err != nil {
+			return "", err
+		}
+		currentPath := strings.TrimSpace(string(out))
+
+		// Split and check for duplicates (case-insensitive)
+		paths := strings.Split(currentPath, ";")
+		for _, p := range paths {
+			if strings.EqualFold(strings.TrimSpace(p), fullPath) {
+				return fullPath, nil // Already exists
+			}
+		}
+
+		// Append safely and update user PATH
+		newPath := currentPath
+		if currentPath != "" {
+			newPath += ";"
+		}
+		newPath += fullPath
+
+		// Escape double quotes for PowerShell command
+		psCmd := fmt.Sprintf(`[Environment]::SetEnvironmentVariable('Path', "%s", 'User')`, strings.ReplaceAll(newPath, `"`, `\"`))
+		cmd := exec.Command("powershell", psCmd)
+		return fullPath, cmd.Run()
 
 	case "linux", "darwin":
 		usr, err := user.Current()
 		if err != nil {
-			return err
+			return fullPath, err
 		}
 
 		rcFile := filepath.Join(usr.HomeDir, ".bashrc")
-		// For zsh users, prefer .zshrc if it exists
 		if _, err := os.Stat(filepath.Join(usr.HomeDir, ".zshrc")); err == nil {
 			rcFile = filepath.Join(usr.HomeDir, ".zshrc")
 		}
@@ -47,15 +70,15 @@ func AddToPath(dir string) error {
 		line := fmt.Sprintf("\nexport PATH=\"$PATH:%s\"\n", fullPath)
 		f, err := os.OpenFile(rcFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 		if err != nil {
-			return err
+			return fullPath, err
 		}
 		defer f.Close()
 
 		_, err = f.WriteString(line)
-		return err
+		return fullPath, err
 
 	default:
-		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+		return "", fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
 }
 
@@ -65,11 +88,16 @@ func RemoveFromPath(dir string) error {
 		return err
 	}
 	fullPath := filepath.Join(pmPath, dir)
+
 	switch runtime.GOOS {
 	case "windows":
-		// Remove from user PATH (persistent, no admin)
-		cmd := exec.Command("powershell",
-			fmt.Sprintf(`[Environment]::SetEnvironmentVariable('Path', ($env:Path -split ';' | Where-Object { $_ -ne '%s' }) -join ';', 'User')`, fullPath))
+		// Fetch current user PATH, filter out target dir, and save
+		psScript := fmt.Sprintf(`
+			$path = [Environment]::GetEnvironmentVariable('Path', 'User')
+			$new = ($path -split ';' | Where-Object { $_ -and ($_ -ne '%s') }) -join ';'
+			[Environment]::SetEnvironmentVariable('Path', $new, 'User')
+		`, fullPath)
+		cmd := exec.Command("powershell", psScript)
 		return cmd.Run()
 
 	case "linux", "darwin":
@@ -78,12 +106,10 @@ func RemoveFromPath(dir string) error {
 			return err
 		}
 		rcFile := filepath.Join(usr.HomeDir, ".bashrc")
-		// For zsh users, prefer .zshrc if it exists
 		if _, err := os.Stat(filepath.Join(usr.HomeDir, ".zshrc")); err == nil {
 			rcFile = filepath.Join(usr.HomeDir, ".zshrc")
 		}
 
-		// Read file contents
 		fileBytes, err := os.ReadFile(rcFile)
 		if err != nil {
 			return err
@@ -95,7 +121,6 @@ func RemoveFromPath(dir string) error {
 				newLines = append(newLines, line)
 			}
 		}
-		// Overwrite rcFile
 		return os.WriteFile(rcFile, []byte(strings.Join(newLines, "\n")), 0644)
 
 	default:

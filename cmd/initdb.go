@@ -6,16 +6,13 @@ package cmd
 import (
 	"fmt"
 	"jpm/db"
-	"jpm/lib"
-	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 )
 
-// listCmd represents the list command
-var listCmd = &cobra.Command{
-	Use:   "list",
+// initdbCmd represents the initdb command
+var initdbCmd = &cobra.Command{
+	Use:   "initdb",
 	Short: "A brief description of your command",
 	Long: `A longer description that spans multiple lines and likely contains examples
 and usage of using your command. For example:
@@ -24,42 +21,27 @@ Cobra is a CLI library for Go that empowers applications.
 This application is a tool to generate the needed files
 to quickly create a Cobra application.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("initdb called")
 		ldb := db.NewLocalDB()
 		defer ldb.Close()
-		inss := ldb.GetAllForList()
 
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-
-		fmt.Fprintln(w, "name\tversion")
-		fmt.Fprintln(w, "----\t-------")
-		for _, ins := range inss {
-			fmt.Fprintf(w, "%s\t%s\n", ins.Name, ins.Version)
-			//fmt.Printf("%s %s\n", ins.Name, ins.Version)
+		err := ldb.CreateInstallations()
+		if err != nil {
+			fmt.Println(err)
 		}
-
-		w.Flush()
-		count := ldb.GetCount()
-		fmt.Println()
-		if count == 1 {
-			fmt.Printf(lib.Yellow+"%d package installed"+lib.Reset, count)
-		} else {
-
-			fmt.Printf(lib.Yellow+"%d packages installed"+lib.Reset, count)
-		}
-
 	},
 }
 
 func init() {
-	rootCmd.AddCommand(listCmd)
+	rootCmd.AddCommand(initdbCmd)
 
 	// Here you will define your flags and configuration settings.
 
 	// Cobra supports Persistent Flags which will work for this command
 	// and all subcommands, e.g.:
-	// listCmd.PersistentFlags().String("foo", "", "A help for foo")
+	// initdbCmd.PersistentFlags().String("foo", "", "A help for foo")
 
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
-	// listCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	// initdbCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }

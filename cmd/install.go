@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"jpm/db"
 	"jpm/lib"
+	"jpm/model"
 	"jpm/parser"
 
 	"github.com/spf13/cobra"
@@ -47,11 +48,22 @@ func install(cmd *cobra.Command, args []string) {
 	name := args[0]
 	rdb := db.NewRemoteDB()
 	defer rdb.Close()
+
+	ldb := db.NewLocalDB()
+	defer ldb.Close()
+
+	var ins model.Installed
 	data, err := rdb.GetOne(name)
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
+
+	ins.Name = name
+	ins.Version = data.Version
+	ins.Location = ""
+	ins.SysPath = ""
+
 	err = lib.Download(data.Url, "bin")
 	if err != nil {
 		fmt.Println(err)
@@ -63,6 +75,12 @@ func install(cmd *cobra.Command, args []string) {
 		return
 	}
 	for _, inc := range incs {
-		inc.Run()
+		inc.Run(&ins)
+	}
+
+	err = ldb.InsertInstallation(&ins)
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"jpm/lib"
+	"jpm/model"
 	"path"
 	"strings"
 )
@@ -36,19 +37,31 @@ type Instruction struct {
 	data  string
 }
 
-func (inc *Instruction) Run() {
+func (inc *Instruction) Run(ins *model.Installed) {
 	switch inc.token {
 	case EXTRACT:
 		fullPath := path.Join("bin", inc.data)
-		lib.ExtractZip(fullPath, "bin")
-		lib.Delete(fullPath)
+		_, err := lib.ExtractZip(fullPath, "bin")
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		err = lib.Delete(fullPath)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+		ins.Location = fullPath
+		return
+
 	case ADD_TO_PATH:
-		err := lib.AddToPath(inc.data)
+		sysPath, err := lib.AddToPath(inc.data)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 		fmt.Printf("Added To Path: %s", inc.data)
+		ins.SysPath = sysPath
 		return
 	}
 }
