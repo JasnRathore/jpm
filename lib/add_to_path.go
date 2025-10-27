@@ -39,8 +39,8 @@ func AddToPath(dir string) (string, error) {
 		// Split and check for duplicates (case-insensitive)
 		paths := strings.Split(currentPath, ";")
 		for _, p := range paths {
-			if strings.EqualFold(strings.TrimSpace(p), fullPath) {
-				return fullPath, nil // Already exists
+			if strings.EqualFold(strings.TrimSpace(p), dir) {
+				return dir, nil // Already exists
 			}
 		}
 
@@ -49,12 +49,12 @@ func AddToPath(dir string) (string, error) {
 		if currentPath != "" {
 			newPath += ";"
 		}
-		newPath += fullPath
+		newPath += dir
 
 		// Escape double quotes for PowerShell command
 		psCmd := fmt.Sprintf(`[Environment]::SetEnvironmentVariable('Path', "%s", 'User')`, strings.ReplaceAll(newPath, `"`, `\"`))
 		cmd := exec.Command("powershell", psCmd)
-		return fullPath, cmd.Run()
+		return dir, cmd.Run()
 
 	case "linux", "darwin":
 		usr, err := user.Current()

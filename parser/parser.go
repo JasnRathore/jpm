@@ -80,8 +80,8 @@ func (inc *Instruction) Validate() error {
 	return nil
 }
 
-// Run executes the instruction and updates the installation model
-func (inc *Instruction) Run(ins *model.Installed, workDir string) error {
+// Run executes the instruction and updates the installation model (backward compatibility)
+func (inc *Instruction) Run(ins *model.Installation, workDir string) error {
 	switch inc.Token {
 	case EXTRACT:
 		return inc.runExtract(workDir)
@@ -108,6 +108,35 @@ func (inc *Instruction) Run(ins *model.Installed, workDir string) error {
 	}
 }
 
+// RunWithContext executes the instruction with full installation context tracking
+func (inc *Instruction) RunWithContext(ctx *model.InstallationContext, workDir string) error {
+	switch inc.Token {
+	case EXTRACT:
+		return inc.runExtractWithContext(ctx, workDir)
+	case EXTRACT_TAR:
+		return inc.runExtractTarWithContext(ctx, workDir, false)
+	case EXTRACT_TAR_GZ:
+		return inc.runExtractTarWithContext(ctx, workDir, true)
+	case ADD_TO_PATH:
+		return inc.runAddToPathWithContext(ctx, workDir)
+	case SET_LOCATION:
+		return inc.runSetLocationWithContext(ctx, workDir)
+	case DELETE:
+		return inc.runDeleteWithContext(ctx, workDir)
+	case MOVE:
+		return inc.runMoveWithContext(ctx, workDir)
+	case COPY:
+		return inc.runCopyWithContext(ctx, workDir)
+	case RENAME:
+		return inc.runRenameWithContext(ctx, workDir)
+	case CHMOD:
+		return inc.runChmodWithContext(ctx, workDir)
+	default:
+		return fmt.Errorf("unimplemented instruction: %v", inc.Token)
+	}
+}
+
+// Legacy implementation methods (for backward compatibility)
 func (inc *Instruction) runExtract(workDir string) error {
 	source := filepath.Join(workDir, inc.Args[0])
 	dest := workDir
@@ -134,7 +163,6 @@ func (inc *Instruction) runExtractTar(workDir string, gzipped bool) error {
 		dest = filepath.Join(workDir, inc.Args[1])
 	}
 
-	// You'll need to implement ExtractTar in lib/lib.go
 	var err error
 	if gzipped {
 		_, err = lib.ExtractTarGz(source, dest)
@@ -153,7 +181,7 @@ func (inc *Instruction) runExtractTar(workDir string, gzipped bool) error {
 	return nil
 }
 
-func (inc *Instruction) runAddToPath(ins *model.Installed, workDir string) error {
+func (inc *Instruction) runAddToPath(ins *model.Installation, workDir string) error {
 	pathToAdd := inc.Args[0]
 	if !filepath.IsAbs(pathToAdd) {
 		pathToAdd = filepath.Join(workDir, pathToAdd)
@@ -169,7 +197,7 @@ func (inc *Instruction) runAddToPath(ins *model.Installed, workDir string) error
 	return nil
 }
 
-func (inc *Instruction) runSetLocation(ins *model.Installed, workDir string) error {
+func (inc *Instruction) runSetLocation(ins *model.Installation, workDir string) error {
 	location := filepath.Join(workDir, inc.Args[0])
 	ins.Location = location
 	return nil
@@ -198,6 +226,132 @@ func (inc *Instruction) runRename(workDir string) error {
 
 func (inc *Instruction) runChmod(workDir string) error {
 	target := filepath.Join(workDir, inc.Args[0])
+	return lib.MakeExecutable(target)
+}
+
+// Context-aware implementation methods
+func (inc *Instruction) runExtractWithContext(ctx *model.InstallationContext, workDir string) error {
+	source := filepath.Join(workDir, inc.Args[0])
+	dest := workDir
+	if len(inc.Args) > 1 {
+		dest = filepath.Join(workDir, inc.Args[1])
+	}
+
+	extractedPath, err := lib.ExtractZip(source, dest)
+	if err != nil {
+		return fmt.Errorf("failed to extract %s: %w", source, err)
+	}
+
+	// Track extracted location
+	if ctx.ExtractedPath == "" {
+		ctx.ExtractedPath = extractedPath
+	}
+
+	// Track the archive file
+	ctx.AddFile(source, "archive", false)
+
+	// Optionally delete the archive after extraction
+	if err := lib.Delete(source); err != nil {
+		fmt.Printf("Warning: failed to delete archive %s: %v\n", source, err)
+	}
+	return nil
+}
+
+func (inc *Instruction) runExtractTarWithContext(ctx *model.InstallationContext, workDir string, gzipped bool) error {
+	source := filepath.Join(workDir, inc.Args[0])
+	dest := workDir
+	if len(inc.Args) > 1 {
+		dest = filepath.Join(workDir, inc.Args[1])
+	}
+
+	var extractedPath string
+	var err error
+	if gzipped {
+		extractedPath, err = lib.ExtractTarGz(source, dest)
+	} else {
+		extractedPath, err = lib.ExtractTar(source, dest)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to extract tar %s: %w", source, err)
+	}
+
+	// Track extracted location
+	if ctx.ExtractedPath == "" {
+		ctx.ExtractedPath = extractedPath
+	}
+
+	// Track the archive file
+	ctx.AddFile(source, "archive", false)
+
+	if err := lib.Delete(source); err != nil {
+		fmt.Printf("Warning: failed to delete archive %s: %v\n", source, err)
+	}
+
+	return nil
+}
+
+func (inc *Instruction) runAddToPathWithContext(ctx *model.InstallationContext, workDir string) error {
+	pathToAdd := inc.Args[0]
+	if !filepath.IsAbs(pathToAdd) {
+		pathToAdd = filepath.Join(workDir, pathToAdd)
+	}
+
+	sysPath, err := lib.AddToPath(pathToAdd)
+	if err != nil {
+		return fmt.Errorf("failed to add to PATH: %w", err)
+	}
+
+	fmt.Printf("Added to PATH: %s\n", pathToAdd)
+	ctx.Installation.SysPath = sysPath
+
+	// Track environment modification
+	ctx.AddEnvMod("path_addition", "PATH", sysPath, "")
+
+	return nil
+}
+
+func (inc *Instruction) runSetLocationWithContext(ctx *model.InstallationContext, workDir string) error {
+	location := filepath.Join(workDir, inc.Args[0])
+	ctx.Installation.Location = location
+	return nil
+}
+
+func (inc *Instruction) runDeleteWithContext(ctx *model.InstallationContext, workDir string) error {
+	target := filepath.Join(workDir, inc.Args[0])
+	return lib.Delete(target)
+}
+
+func (inc *Instruction) runMoveWithContext(ctx *model.InstallationContext, workDir string) error {
+	src := filepath.Join(workDir, inc.Args[0])
+	dst := filepath.Join(workDir, inc.Args[1])
+
+	// Track the destination file
+	ctx.AddFile(dst, "moved", false)
+
+	return lib.Move(src, dst)
+}
+
+func (inc *Instruction) runCopyWithContext(ctx *model.InstallationContext, workDir string) error {
+	src := filepath.Join(workDir, inc.Args[0])
+	dst := filepath.Join(workDir, inc.Args[1])
+
+	// Track the copied file
+	ctx.AddFile(dst, "copied", false)
+
+	return lib.Copy(src, dst)
+}
+
+func (inc *Instruction) runRenameWithContext(ctx *model.InstallationContext, workDir string) error {
+	return inc.runMoveWithContext(ctx, workDir)
+}
+
+func (inc *Instruction) runChmodWithContext(ctx *model.InstallationContext, workDir string) error {
+	target := filepath.Join(workDir, inc.Args[0])
+
+	// Track as executable
+	ctx.AddFile(target, "binary", true)
+
 	return lib.MakeExecutable(target)
 }
 

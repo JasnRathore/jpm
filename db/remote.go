@@ -3,156 +3,140 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"jpm/config"
+	"jpm/model"
 	"jpm/version"
 
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
-
-const (
-	url   = "libsql://jpm-jasnrathore.aws-ap-south-1.turso.io"
-	token = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicm8iLCJpYXQiOjE3NjEzNzM5OTcsImlkIjoiYWM1N2NmY2ItNTFmMi00MzU5LThjYTktODQzODFmOGY4MTdhIiwicmlkIjoiMzZjZGUxZjEtNjQyZS00ZGFkLTk5YWQtZGU0ZWYyZTkzNmIwIn0.5Wah3NkS6u1vz0yiZjuYLScGYGwGCZTxi2WLNhlIyy7P4wJLWuUDXl3gv3ja7jJ-bW_AZDdnuYSlt5tUS6WdCA"
-)
-
-type Metadata struct {
-	Version      string
-	Url          string
-	Instructions string
-}
-
-type PackageVersion struct {
-	Name         string
-	Version      string
-	BinaryUrl    string
-	Instructions string
-	IsLatest     bool
-}
 
 type RemoteDB struct {
 	Connection *sql.DB
 }
 
 func NewRemoteDB() RemoteDB {
-	newUrl := fmt.Sprintf("%s?authToken=%s", url, token)
+	newUrl := fmt.Sprintf("%s?authToken=%s", config.GetEnvVar("URL"), config.GetEnvVar("TOKEN"))
 	conn, _ := sql.Open("libsql", newUrl)
 	return RemoteDB{
 		Connection: conn,
 	}
 }
 
-func (rdb *RemoteDB) GetAll() {
-	stmt, _ := rdb.Connection.Prepare("SELECT * FROM releases")
-	defer stmt.Close()
+// GetPackageInfo retrieves full package information
+func (rdb *RemoteDB) GetPackageInfo(name string) (*model.Package, error) {
+	var pkg model.Package
+	err := rdb.Connection.QueryRow(`
+		SELECT id, name, description, homepage_url, repository_url, license, author, created_at, updated_at
+		FROM packages
+		WHERE name = ?`,
+		name,
+	).Scan(&pkg.ID, &pkg.Name, &pkg.Description, &pkg.HomepageURL,
+		&pkg.RepositoryURL, &pkg.License, &pkg.Author, &pkg.CreatedAt, &pkg.UpdatedAt)
 
-	rows, _ := stmt.Query()
-	for rows.Next() {
-		var name string
-		var binary_url string
-		var version string
-		var instructions string
-		_ = rows.Scan(&name, &version, &binary_url, &instructions)
-		fmt.Printf("%s, %s, %s\n", name, version, binary_url)
-	}
-}
-
-// GetOne fetches the latest version of a package by default
-func (rdb *RemoteDB) GetOne(name string) (*Metadata, error) {
-	return rdb.GetVersion(name, "")
-}
-
-// GetVersion fetches a specific version of a package
-// If versionConstraint is empty, returns the latest version
-func (rdb *RemoteDB) GetVersion(name, versionConstraint string) (*Metadata, error) {
-	if versionConstraint == "" || versionConstraint == "latest" {
-		return rdb.getLatestVersion(name)
-	}
-
-	// Check if it's an exact version
-	if _, err := version.Parse(versionConstraint); err == nil {
-		return rdb.getExactVersion(name, versionConstraint)
-	}
-
-	// Otherwise treat it as a constraint (e.g., ">=1.2.0", "^1.0.0")
-	return rdb.getVersionByConstraint(name, versionConstraint)
-}
-
-// getLatestVersion gets the latest version of a package
-func (rdb *RemoteDB) getLatestVersion(name string) (*Metadata, error) {
-	stmt, err := rdb.Connection.Prepare(`
-		SELECT version, binary_url, instructions 
-		FROM releases 
-		WHERE name = ? 
-		ORDER BY version DESC 
-		LIMIT 1
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-
-	var metadata Metadata
-	err = stmt.QueryRow(name).Scan(&metadata.Version, &metadata.Url, &metadata.Instructions)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("package '%s' not found", name)
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	return &metadata, nil
+	return &pkg, nil
 }
 
-// getExactVersion gets a specific version of a package
-func (rdb *RemoteDB) getExactVersion(name, versionStr string) (*Metadata, error) {
-	// Normalize version (remove 'v' prefix if present)
+// GetRelease fetches a specific release
+func (rdb *RemoteDB) GetRelease(packageName, versionConstraint string) (*model.Release, error) {
+	// Get package first
+	pkg, err := rdb.GetPackageInfo(packageName)
+	if err != nil {
+		return nil, err
+	}
+
+	if versionConstraint == "" || versionConstraint == "latest" {
+		return rdb.getLatestRelease(pkg.ID)
+	}
+
+	// Check if it's an exact version
+	if _, err := version.Parse(versionConstraint); err == nil {
+		return rdb.getExactRelease(pkg.ID, versionConstraint)
+	}
+
+	// Otherwise treat it as a constraint
+	return rdb.getReleaseByConstraint(pkg.ID, versionConstraint)
+}
+
+func (rdb *RemoteDB) getLatestRelease(packageID int) (*model.Release, error) {
+	var release model.Release
+	err := rdb.Connection.QueryRow(`
+		SELECT id, package_id, version, binary_url, instructions, 
+		       checksum_sha256, file_size_bytes, release_notes, 
+		       is_prerelease, is_deprecated, released_at
+		FROM releases
+		WHERE package_id = ? AND is_deprecated = FALSE
+		ORDER BY released_at DESC
+		LIMIT 1`,
+		packageID,
+	).Scan(&release.ID, &release.PackageID, &release.Version, &release.BinaryURL,
+		&release.Instructions, &release.ChecksumSHA256, &release.FileSizeBytes,
+		&release.ReleaseNotes, &release.IsPrerelease, &release.IsDeprecated, &release.ReleasedAt)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no releases found for package")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &release, nil
+}
+
+func (rdb *RemoteDB) getExactRelease(packageID int, versionStr string) (*model.Release, error) {
 	v, err := version.Parse(versionStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid version format: %s", versionStr)
 	}
 	normalizedVersion := v.String()
 
-	stmt, err := rdb.Connection.Prepare(`
-		SELECT version, binary_url, instructions 
-		FROM releases 
-		WHERE name = ? AND version = ? 
-		LIMIT 1
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
+	var release model.Release
+	err = rdb.Connection.QueryRow(`
+		SELECT id, package_id, version, binary_url, instructions,
+		       checksum_sha256, file_size_bytes, release_notes,
+		       is_prerelease, is_deprecated, released_at
+		FROM releases
+		WHERE package_id = ? AND version = ?
+		LIMIT 1`,
+		packageID, normalizedVersion,
+	).Scan(&release.ID, &release.PackageID, &release.Version, &release.BinaryURL,
+		&release.Instructions, &release.ChecksumSHA256, &release.FileSizeBytes,
+		&release.ReleaseNotes, &release.IsPrerelease, &release.IsDeprecated, &release.ReleasedAt)
 
-	var metadata Metadata
-	err = stmt.QueryRow(name, normalizedVersion).Scan(&metadata.Version, &metadata.Url, &metadata.Instructions)
 	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("package '%s' version '%s' not found", name, versionStr)
+		return nil, fmt.Errorf("version '%s' not found", versionStr)
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	return &metadata, nil
+	return &release, nil
 }
 
-// getVersionByConstraint finds the best matching version based on a constraint
-func (rdb *RemoteDB) getVersionByConstraint(name, constraint string) (*Metadata, error) {
-	// Get all versions of the package
-	versions, err := rdb.GetAllVersions(name)
+func (rdb *RemoteDB) getReleaseByConstraint(packageID int, constraint string) (*model.Release, error) {
+	releases, err := rdb.GetAllReleases(packageID)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(versions) == 0 {
-		return nil, fmt.Errorf("package '%s' not found", name)
+	if len(releases) == 0 {
+		return nil, fmt.Errorf("no releases found")
 	}
 
-	// Find the highest version that satisfies the constraint
-	var bestMatch *PackageVersion
+	var bestMatch *model.Release
 	var bestVersion *version.Version
 
-	for i := range versions {
-		v, err := version.Parse(versions[i].Version)
+	for i := range releases {
+		if releases[i].IsDeprecated {
+			continue
+		}
+
+		v, err := version.Parse(releases[i].Version)
 		if err != nil {
-			continue // Skip invalid versions
+			continue
 		}
 
 		compatible, err := v.IsCompatible(constraint)
@@ -163,93 +147,210 @@ func (rdb *RemoteDB) getVersionByConstraint(name, constraint string) (*Metadata,
 		if compatible {
 			if bestVersion == nil || v.GreaterThan(bestVersion) {
 				bestVersion = v
-				bestMatch = &versions[i]
+				bestMatch = &releases[i]
 			}
 		}
 	}
 
 	if bestMatch == nil {
-		return nil, fmt.Errorf("no version of '%s' satisfies constraint '%s'", name, constraint)
+		return nil, fmt.Errorf("no version satisfies constraint '%s'", constraint)
 	}
 
-	return &Metadata{
-		Version:      bestMatch.Version,
-		Url:          bestMatch.BinaryUrl,
-		Instructions: bestMatch.Instructions,
-	}, nil
+	return bestMatch, nil
 }
 
-// GetAllVersions returns all versions of a package
-func (rdb *RemoteDB) GetAllVersions(name string) ([]PackageVersion, error) {
-	stmt, err := rdb.Connection.Prepare(`
-		SELECT name, version, binary_url, instructions 
-		FROM releases 
-		WHERE name = ? 
-		ORDER BY version DESC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-
-	rows, err := stmt.Query(name)
+// GetAllReleases returns all releases for a package
+func (rdb *RemoteDB) GetAllReleases(packageID int) ([]model.Release, error) {
+	rows, err := rdb.Connection.Query(`
+		SELECT id, package_id, version, binary_url, instructions,
+		       checksum_sha256, file_size_bytes, release_notes,
+		       is_prerelease, is_deprecated, released_at
+		FROM releases
+		WHERE package_id = ?
+		ORDER BY released_at DESC`,
+		packageID,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var versions []PackageVersion
+	var releases []model.Release
 	for rows.Next() {
-		var pv PackageVersion
-		err := rows.Scan(&pv.Name, &pv.Version, &pv.BinaryUrl, &pv.Instructions)
+		var r model.Release
+		err := rows.Scan(&r.ID, &r.PackageID, &r.Version, &r.BinaryURL,
+			&r.Instructions, &r.ChecksumSHA256, &r.FileSizeBytes,
+			&r.ReleaseNotes, &r.IsPrerelease, &r.IsDeprecated, &r.ReleasedAt)
 		if err != nil {
 			return nil, err
 		}
-		versions = append(versions, pv)
+		releases = append(releases, r)
 	}
-
-	if len(versions) == 0 {
-		return nil, fmt.Errorf("package '%s' not found", name)
-	}
-
-	// Mark the latest version
-	if len(versions) > 0 {
-		versions[0].IsLatest = true
-	}
-
-	return versions, nil
+	return releases, nil
 }
 
-// ListAllPackages returns all unique package names with their latest version
-func (rdb *RemoteDB) ListAllPackages() ([]PackageVersion, error) {
-	stmt, err := rdb.Connection.Prepare(`
-		SELECT DISTINCT name, 
-		       (SELECT version FROM releases r2 WHERE r2.name = r1.name ORDER BY version DESC LIMIT 1) as latest_version
-		FROM releases r1
-		ORDER BY name
-	`)
+// GetAllReleasesByName returns all releases for a package by name
+func (rdb *RemoteDB) GetAllReleasesByName(packageName string) ([]model.Release, error) {
+	pkg, err := rdb.GetPackageInfo(packageName)
 	if err != nil {
 		return nil, err
 	}
-	defer stmt.Close()
+	return rdb.GetAllReleases(pkg.ID)
+}
 
-	rows, err := stmt.Query()
+// ListAllPackages returns all packages with their latest version
+func (rdb *RemoteDB) ListAllPackages() ([]model.PackageSummary, error) {
+	rows, err := rdb.Connection.Query(`
+		SELECT p.id, p.name, p.description,
+		       (SELECT r.version FROM releases r 
+		        WHERE r.package_id = p.id AND r.is_deprecated = FALSE 
+		        ORDER BY r.released_at DESC LIMIT 1) as latest_version
+		FROM packages p
+		ORDER BY p.name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var packages []PackageVersion
+	var packages []model.PackageSummary
 	for rows.Next() {
-		var pv PackageVersion
-		err := rows.Scan(&pv.Name, &pv.Version)
+		var ps model.PackageSummary
+		err := rows.Scan(&ps.ID, &ps.Name, &ps.Description, &ps.LatestVersion)
 		if err != nil {
 			return nil, err
 		}
-		pv.IsLatest = true
-		packages = append(packages, pv)
+		packages = append(packages, ps)
 	}
+	return packages, nil
+}
 
+// SearchPackages searches for packages by name or description
+func (rdb *RemoteDB) SearchPackages(query string) ([]model.PackageSummary, error) {
+	rows, err := rdb.Connection.Query(`
+		SELECT p.id, p.name, p.description,
+		       (SELECT r.version FROM releases r 
+		        WHERE r.package_id = p.id AND r.is_deprecated = FALSE 
+		        ORDER BY r.released_at DESC LIMIT 1) as latest_version
+		FROM packages p
+		WHERE p.name LIKE ? OR p.description LIKE ?
+		ORDER BY p.name`,
+		"%"+query+"%", "%"+query+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var packages []model.PackageSummary
+	for rows.Next() {
+		var ps model.PackageSummary
+		err := rows.Scan(&ps.ID, &ps.Name, &ps.Description, &ps.LatestVersion)
+		if err != nil {
+			return nil, err
+		}
+		packages = append(packages, ps)
+	}
+	return packages, nil
+}
+
+// GetDependencies returns dependencies for a release
+func (rdb *RemoteDB) GetDependencies(releaseID int) ([]model.ReleaseDependency, error) {
+	rows, err := rdb.Connection.Query(`
+		SELECT d.id, d.release_id, p.name, d.version_constraint, d.dependency_type
+		FROM dependencies d
+		JOIN packages p ON d.depends_on_package_id = p.id
+		WHERE d.release_id = ?`,
+		releaseID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var deps []model.ReleaseDependency
+	for rows.Next() {
+		var d model.ReleaseDependency
+		err := rows.Scan(&d.ID, &d.ReleaseID, &d.PackageName, &d.VersionConstraint, &d.DependencyType)
+		if err != nil {
+			return nil, err
+		}
+		deps = append(deps, d)
+	}
+	return deps, nil
+}
+
+// GetPlatformCompatibility returns platform info for a release
+func (rdb *RemoteDB) GetPlatformCompatibility(releaseID int) ([]model.PlatformCompat, error) {
+	rows, err := rdb.Connection.Query(`
+		SELECT id, release_id, os, arch, binary_url
+		FROM platform_compatibility
+		WHERE release_id = ?`,
+		releaseID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var platforms []model.PlatformCompat
+	for rows.Next() {
+		var p model.PlatformCompat
+		err := rows.Scan(&p.ID, &p.ReleaseID, &p.OS, &p.Arch, &p.BinaryURL)
+		if err != nil {
+			return nil, err
+		}
+		platforms = append(platforms, p)
+	}
+	return platforms, nil
+}
+
+// GetPackageTags returns tags for a package
+func (rdb *RemoteDB) GetPackageTags(packageID int) ([]string, error) {
+	rows, err := rdb.Connection.Query(`
+		SELECT tag FROM package_tags WHERE package_id = ? ORDER BY tag`,
+		packageID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		tags = append(tags, tag)
+	}
+	return tags, nil
+}
+
+// GetPackagesByTag returns packages with a specific tag
+func (rdb *RemoteDB) GetPackagesByTag(tag string) ([]model.PackageSummary, error) {
+	rows, err := rdb.Connection.Query(`
+		SELECT p.id, p.name, p.description,
+		       (SELECT r.version FROM releases r 
+		        WHERE r.package_id = p.id AND r.is_deprecated = FALSE 
+		        ORDER BY r.released_at DESC LIMIT 1) as latest_version
+		FROM packages p
+		JOIN package_tags pt ON p.id = pt.package_id
+		WHERE pt.tag = ?
+		ORDER BY p.name`,
+		tag)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var packages []model.PackageSummary
+	for rows.Next() {
+		var ps model.PackageSummary
+		err := rows.Scan(&ps.ID, &ps.Name, &ps.Description, &ps.LatestVersion)
+		if err != nil {
+			return nil, err
+		}
+		packages = append(packages, ps)
+	}
 	return packages, nil
 }
 

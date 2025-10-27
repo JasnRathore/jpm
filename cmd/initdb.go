@@ -1,47 +1,61 @@
-/*
-Copyright © 2025 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
 	"fmt"
 	"jpm/db"
+	"jpm/lib"
 
 	"github.com/spf13/cobra"
 )
 
-// initdbCmd represents the initdb command
 var initdbCmd = &cobra.Command{
 	Use:   "initdb",
-	Short: "A brief description of your command",
-	Long: `A longer description that spans multiple lines and likely contains examples
-and usage of using your command. For example:
+	Short: "Initialize the local database schema",
+	Long: `Initialize the local database with all required tables and indexes.
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
+This command creates:
+  • installed packages table
+  • installed files tracking
+  • environment modifications tracking
+  • installation history
+  • dependencies tracking
+  • configuration storage
+  • metadata cache
+
+The database file is created at: jpm.db
+
+Note: This command is safe to run multiple times. Existing data will not be lost.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("initdb called")
+		fmt.Printf("%sInitializing local database...%s\n\n", lib.Blue, lib.Reset)
+
 		ldb := db.NewLocalDB()
 		defer ldb.Close()
 
-		err := ldb.CreateInstallations()
+		// Initialize schema
+		fmt.Println("Creating tables and indexes...")
+		err := ldb.InitSchema()
 		if err != nil {
-			fmt.Println(err)
+			fmt.Printf("%s✗ Error: %v%s\n", lib.Red, err, lib.Reset)
+			return
 		}
+
+		fmt.Printf("%s✓ Database schema initialized successfully%s\n", lib.Green, lib.Reset)
+		fmt.Println("\nDatabase location: jpm.db")
+
+		// Check if there are existing installations
+		count := ldb.GetCount()
+		if count > 0 {
+			fmt.Printf("\nFound %d existing installation(s)\n", count)
+		}
+
+		fmt.Println("\nYou can now use jpm to install packages!")
+		fmt.Println("\nNext steps:")
+		fmt.Println("  • jpm search           - Browse available packages")
+		fmt.Println("  • jpm install <pkg>    - Install a package")
+		fmt.Println("  • jpm list             - List installed packages")
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(initdbCmd)
-
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// initdbCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	// initdbCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
 }

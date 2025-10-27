@@ -14,6 +14,7 @@ require (
 	github.com/coder/websocket v1.8.12 // indirect
 	github.com/ebitengine/purego v0.10.0-alpha.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	golang.org/x/exp v0.0.0-20240325151524-a685a6edb6d8 // indirect
 	golang.org/x/sys v0.30.0 // indirect

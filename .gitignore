@@ -1,5 +1,9 @@
 jpm.db
 jpm.db-wal
+jpm.db-shm
 /bin
 jpm.exe
 main.exe
+.env.*
+.env
+*/.env
