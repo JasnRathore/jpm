@@ -7,3 +7,5 @@ main.exe
 .env.*
 .env
 */.env
+JasnPackageManager@*.exe
+target/
